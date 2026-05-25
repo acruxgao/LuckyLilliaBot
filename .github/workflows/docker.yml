@@ -18,16 +18,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history and tags
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      # 不再需要登录 Docker Hub，已移除 login 步骤
 
       - name: Determine version
         id: version
@@ -35,47 +34,63 @@ jobs:
           if [ "${{ github.event_name }}" = "release" ]; then
             version="${{ github.event.release.tag_name }}"
             version=${version#v}
-            echo "Version from release: $version"
           else
             input_version="${{ github.event.inputs.version }}"
             if [ -n "$input_version" ] && [ "$input_version" != "" ]; then
               version="$input_version"
-              echo "Version from manual input: $version"
             else
               latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
               if [ -n "$latest_tag" ]; then
                 version=${latest_tag#v}
-                echo "Version from latest tag: $version (tag: $latest_tag)"
               else
                 version="5.8.0"
-                echo "No tags found, using fallback version: $version"
               fi
             fi
           fi
           echo "version=$version" >> $GITHUB_OUTPUT
 
-      - name: Build and push LLBot Docker image
+      - name: Build Docker images and export to tar.gz
         run: |
           version="${{ steps.version.outputs.version }}"
-          username="${{ secrets.DOCKER_USERNAME }}"
-          echo "Building LLBot with version: $version"
-          docker buildx build \
-            --progress=plain \
-            --build-arg LLBOT_VERSION="$version" \
-            --platform linux/amd64,linux/arm64,linux/arm/v7 \
-            -t "$username/llbot:$version" \
-            -t "$username/llbot:latest" \
-            -t "$username/llonebot:$version" \
-            -t "$username/llonebot:latest" \
-            -f docker/Dockerfile \
-            --push \
-            .
+          platforms="linux/amd64 linux/arm64 linux/arm/v7"
+          for platform in $platforms; do
+            # 平台名中的 / 替换为 - 用于文件名
+            platform_clean=$(echo "$platform" | tr '/' '-')
+            echo "🔨 Building for $platform..."
+            docker buildx build \
+              --platform "$platform" \
+              --build-arg LLBOT_VERSION="$version" \
+              -t "llbot:$version-${platform_clean}" \
+              -f docker/Dockerfile \
+              --output type=tar,dest="llbot-$version-${platform_clean}.tar" \
+              .
+            gzip "llbot-$version-${platform_clean}.tar"
+            echo "✅ Created llbot-$version-${platform_clean}.tar.gz"
+          done
 
-      - name: Output build summary
+      - name: Upload images to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: llbot-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload images as workflow artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: llbot-docker-images-${{ steps.version.outputs.version }}
+          path: llbot-*.tar.gz
+          retention-days: 7
+
+      - name: Output summary
         run: |
-          echo "✅ Successfully built and pushed LLBot Docker image"
-          echo "📦 Image tags:"
-          echo "  - ${{ secrets.DOCKER_USERNAME }}/llbot:${{ steps.version.outputs.version }}"
-          echo "  - ${{ secrets.DOCKER_USERNAME }}/llbot:latest"
-          echo "  - ${{ secrets.DOCKER_USERNAME }}/llonebot:${{ steps.version.outputs.version }}"
-          echo "  - ${{ secrets.DOCKER_USERNAME }}/llonebot:latest"
+          echo "✅ Built Docker images for linux/amd64, linux/arm64, linux/arm/v7"
+          echo "📦 Files generated:"
+          ls -lh llbot-*.tar.gz
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "⬆️ Uploaded to the Release assets of this tag"
+          else
+            echo "⬆️ Uploaded to the workflow Artifacts (download from Actions page)"
+          fi
