@@ -33,25 +33,20 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
-            # Extract version from release tag (remove 'v' prefix if present)
             version="${{ github.event.release.tag_name }}"
             version=${version#v}
             echo "Version from release: $version"
           else
-            # Manual trigger - check if version is provided
             input_version="${{ github.event.inputs.version }}"
             if [ -n "$input_version" ] && [ "$input_version" != "" ]; then
-              # Use provided version
               version="$input_version"
               echo "Version from manual input: $version"
             else
-              # Get latest tag if no version provided
               latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
               if [ -n "$latest_tag" ]; then
                 version=${latest_tag#v}
                 echo "Version from latest tag: $version (tag: $latest_tag)"
               else
-                # Fallback to default if no tags exist
                 version="5.8.0"
                 echo "No tags found, using fallback version: $version"
               fi
@@ -67,7 +62,7 @@ jobs:
           docker buildx build \
             --progress=plain \
             --build-arg LLBOT_VERSION="$version" \
-            --platform linux/amd64,linux/arm64 \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 \
             -t "$username/llbot:$version" \
             -t "$username/llbot:latest" \
             -t "$username/llonebot:$version" \
